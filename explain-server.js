@@ -1,4 +1,9 @@
 // explain-server.js
+// ================================
+// Explain HTTP + SSE 서버
+// 실시간 미러링 + 이미지 저장 + 고객정보 관리
+// ================================
+
 const express = require("express");
 const http = require("http");
 const cors = require("cors");
@@ -14,43 +19,37 @@ app.use(cors());
 app.use(express.json({ limit: "20mb" }));
 app.use(express.urlencoded({ extended: true, limit: "20mb" }));
 
-// ---- public 폴더 서빙 ----
+// ================================
+// 정적 파일 (view.html 등)
+// ================================
 app.use(express.static(path.join(__dirname, "public")));
 
-// ---- PDF/PNG 저장 폴더 ----
+// ================================
+// /health (LoginActivity 서버 체크용) ← ★ 필수
+// ================================
+app.get("/health", (req, res) => {
+  res.json({ ok: true });
+});
+
+// ================================
+// PDF / PNG 저장 디렉토리
+// ================================
 const PDF_DIR = path.join(__dirname, "pdfs");
 if (!fs.existsSync(PDF_DIR)) fs.mkdirSync(PDF_DIR);
 
 const upload = multer({ dest: PDF_DIR });
 
 // ================================
-// (NEW) 0) 로그인 API 추가 (404 해결)
-// ================================
-app.post("/api/login", (req, res) => {
-  const { empNo } = req.body;
-
-  if (!empNo) {
-    return res.status(400).json({ ok: false, error: "empNo 누락" });
-  }
-
-  console.log("📌 LOGIN:", empNo);
-
-  if (!sseChannels[empNo]) sseChannels[empNo] = [];
-
-  res.json({ ok: true, empNo });
-});
-
-// ================================
-// 1) 미러링 VIEW 페이지 라우터
+// 1) VIEW 화면
 // ================================
 app.get("/view", (req, res) => {
   res.sendFile(path.join(__dirname, "public/view.html"));
 });
 
 // ================================
-// 2) 직원번호(empNo)별 SSE 채널
+// 2) 직원번호(empNo)별 SSE 연결
 // ================================
-const sseChannels = {}; // empNo → [res...]
+const sseChannels = {}; // empNo -> [res]
 
 app.get("/events/:empNo", (req, res) => {
   const empNo = req.params.empNo;
@@ -73,12 +72,12 @@ app.get("/events/:empNo", (req, res) => {
   req.on("close", () => {
     console.log("❌ SSE CLOSE:", empNo);
     clearInterval(interval);
-    sseChannels[empNo] = (sseChannels[empNo] || []).filter((r) => r !== res);
+    sseChannels[empNo] = sseChannels[empNo].filter((r) => r !== res);
   });
 });
 
 // ================================
-// 메시지 브로드캐스트 (SSE)
+// SSE 메시지 브로드캐스트
 // ================================
 function sendSSE(empNo, payload) {
   const list = sseChannels[empNo];
@@ -92,7 +91,7 @@ function sendSSE(empNo, payload) {
 }
 
 // ================================
-// 3) Android → Server → Web 실시간 전달
+// 3) Android → Server → Web 미러링
 // ================================
 app.post("/api/send", (req, res) => {
   const { empNo, type, data } = req.body;
@@ -103,22 +102,25 @@ app.post("/api/send", (req, res) => {
     return res.status(400).json({ ok: false, error: "필수값 누락" });
   }
 
+  // base64 이미지 그대로 웹에 전송
   sendSSE(empNo, { type, data });
 
   res.json({ ok: true });
 });
 
 // ================================
-// 4) 고객 관리 / PNG 업로드
+// 4) 고객 관리
 // ================================
 let customers = [];
 let nextCustomerId = 1;
 
+// 고객 저장
 app.post("/api/customer", (req, res) => {
   const { empNo, name, phone, datetime } = req.body;
 
-  if (!empNo || !name || !phone)
+  if (!empNo || !name || !phone) {
     return res.status(400).json({ ok: false, error: "필수 누락" });
+  }
 
   const entry = {
     id: nextCustomerId++,
@@ -133,12 +135,15 @@ app.post("/api/customer", (req, res) => {
   res.json({ ok: true, customer: entry });
 });
 
+// 고객 조회
 app.get("/api/customer/:empNo", (req, res) => {
   const list = customers.filter((c) => c.empNo === req.params.empNo);
   res.json({ ok: true, list });
 });
 
+// ================================
 // PNG 업로드
+// ================================
 app.post("/api/upload", upload.single("file"), (req, res) => {
   const id = parseInt(req.body.customerId);
   const file = req.file;
@@ -156,14 +161,14 @@ app.post("/api/upload", upload.single("file"), (req, res) => {
   res.json({ ok: true, filename: newName });
 });
 
+// ================================
 // 관리자 페이지
+// ================================
 app.get("/admin/:empNo", (req, res) => {
   const empNo = req.params.empNo;
   const list = customers.filter((c) => c.empNo === empNo);
 
-  let html = `
-  <html><body><h1>상담 이력 - ${empNo}</h1><ul>
-  `;
+  let html = `<html><body><h1>상담 이력 - ${empNo}</h1><ul>`;
   for (const c of list) {
     html += `<li>${c.name} (${c.phone}) - ${c.pdfFileName}</li>`;
   }
