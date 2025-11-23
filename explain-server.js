@@ -1,150 +1,138 @@
+// explain-server.js (완전 작동 버전)
+// ================================
+// - SSE: 실시간 그림/하이라이트/삭제/리셋
+// - PNG 업로드 후 고객 화면 자동 갱신
+// - /view?empNo=XXXX 로 고객 화면 제공
+// - public 폴더에서 정적파일 제공
+// ================================
+
 const express = require("express");
 const http = require("http");
-const cors = require("cors");
 const path = require("path");
 const fs = require("fs");
+const cors = require("cors");
 const multer = require("multer");
 
 const app = express();
 const server = http.createServer(app);
+
 const PORT = process.env.PORT || 5785;
 
 app.use(cors());
 app.use(express.json());
 
-// ----------------------------
-// STATIC (public 폴더 전체 제공)
-// ----------------------------
+// public 정적 파일 서빙
 app.use("/", express.static(path.join(__dirname, "public")));
 
-console.log("📂 Static folder:", path.join(__dirname, "public"));
+// 저장 폴더
+const UPLOAD_DIR = path.join(__dirname, "uploads");
+if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR);
 
-// ----------------------------
-// SSE 관리
-// ----------------------------
-const sseChannels = {}; // empNo → [response...]
+// PNG 업로드용 multer
+const upload = multer({ dest: UPLOAD_DIR });
 
+// SSE 저장소
+const channels = {}; // empNo → [res, res...]
+
+// ==============================
+// SSE 연결
+// ==============================
 app.get("/events/:empNo", (req, res) => {
-  const empNo = req.params.empNo;
+  const { empNo } = req.params;
 
   res.set({
     "Content-Type": "text/event-stream",
-    "Cache-Control": "no-cache",
-    Connection: "keep-alive"
+    "Cache-Control": "no-cache, no-transform",
+    Connection: "keep-alive",
   });
 
   res.flushHeaders?.();
 
-  if (!sseChannels[empNo]) sseChannels[empNo] = [];
-  sseChannels[empNo].push(res);
+  if (!channels[empNo]) channels[empNo] = [];
+  channels[empNo].push(res);
 
-  const interval = setInterval(() => {
+  console.log(`🔗 SSE connected: ${empNo}`);
+
+  const heartbeat = setInterval(() => {
     res.write(":\n\n");
   }, 30000);
 
   req.on("close", () => {
-    clearInterval(interval);
-    sseChannels[empNo] = sseChannels[empNo].filter(r => r !== res);
+    clearInterval(heartbeat);
+    channels[empNo] = channels[empNo].filter((r) => r !== res);
+    console.log(`❌ SSE disconnected: ${empNo}`);
   });
 });
 
-function broadcast(empNo, data) {
-  const list = sseChannels[empNo];
+// Broadcaster
+function sendSSE(empNo, payload) {
+  const list = channels[empNo];
   if (!list) return;
-  const msg = `data: ${JSON.stringify(data)}\n\n`;
-  list.forEach(res => res.write(msg));
+
+  const msg = `data: ${JSON.stringify(payload)}\n\n`;
+  list.forEach((r) => r.write(msg));
 }
 
-// ----------------------------
-// 상담 이벤트 전송
-// ----------------------------
+// ==============================
+// 상담사 → 고객 SSE 전송 API
+// ==============================
 app.post("/api/send", (req, res) => {
   const { empNo, type, data } = req.body;
 
   if (!empNo || !type) {
-    return res.status(400).json({ ok: false });
+    return res.status(400).json({ ok: false, error: "empNo, type required" });
   }
 
-  broadcast(empNo, { type, data });
+  sendSSE(empNo, { type, data });
   res.json({ ok: true });
 });
 
-// ----------------------------
-// 고객 저장
-// ----------------------------
-let nextCustomerId = 1;
-const customers = [];
-
-app.post("/api/customer", (req, res) => {
-  const { empNo, name, phone, datetime } = req.body;
-
-  const item = {
-    id: nextCustomerId++,
-    empNo,
-    name,
-    phone,
-    datetime,
-    pdfFileName: null
-  };
-
-  customers.push(item);
-
-  res.json({ ok: true, customer: item });
-});
-
-// ----------------------------
-// PNG 업로드
-// ----------------------------
-const UPLOAD_DIR = path.join(__dirname, "pdfs");
-if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR);
-
-const upload = multer({ dest: UPLOAD_DIR });
-
+// ==============================
+// PNG 업로드 → 고객 화면 자동 갱신
+// ==============================
 app.post("/api/upload", upload.single("file"), (req, res) => {
-  const customerId = parseInt(req.body.customerId, 10);
+  const empNo = req.body.empNo;
   const file = req.file;
 
-  const customer = customers.find(c => c.id === customerId);
-  if (!customer) return res.status(404).json({ ok: false });
+  if (!empNo || !file) {
+    return res.status(400).json({ ok: false });
+  }
 
-  const safeName = customer.name.replace(/[^a-zA-Z0-9가-힣]/g, "");
-  const safePhone = customer.phone.replace(/[^0-9]/g, "");
-
-  const newFileName = `${safeName}_${safePhone}.png`;
-  const newPath = path.join(UPLOAD_DIR, newFileName);
+  const newName = `${empNo}_${Date.now()}.png`;
+  const newPath = path.join(UPLOAD_DIR, newName);
 
   fs.renameSync(file.path, newPath);
-  customer.pdfFileName = newFileName;
 
-  res.json({ ok: true, url: `/pdf/${customerId}` });
+  // 고객 화면에 이미지 표시 이벤트 발송
+  sendSSE(empNo, {
+    type: "image",
+    url: `/uploads/${newName}`,
+  });
+
+  res.json({
+    ok: true,
+    url: `/uploads/${newName}`,
+  });
 });
 
-// ----------------------------
-// PNG 다운로드
-// ----------------------------
-app.get("/pdf/:id", (req, res) => {
-  const id = parseInt(req.params.id, 10);
-  const customer = customers.find(c => c.id === id);
+// 업로드 이미지 공개 제공
+app.use("/uploads", express.static(UPLOAD_DIR));
 
-  if (!customer?.pdfFileName) return res.status(404).send("not ready");
-
-  const filePath = path.join(UPLOAD_DIR, customer.pdfFileName);
-  if (!fs.existsSync(filePath)) return res.status(404).send("not exist");
-
-  res.download(filePath);
-});
-
-// ----------------------------
-// VIEW 페이지
-// ----------------------------
-// https://server/view?empNo=19931508
+// ==============================
+// 고객 화면 URL
+// ==============================
 app.get("/view", (req, res) => {
-  res.sendFile(path.join(__dirname, "public", "viewer.html"));
+  res.sendFile(path.join(__dirname, "public/view.html"));
 });
 
-// ----------------------------
-// 서버 시작
-// ----------------------------
+// ==============================
+// 헬스체크
+// ==============================
+app.get("/health", (req, res) => {
+  res.json({ ok: true });
+});
+
+// ==============================
 server.listen(PORT, "0.0.0.0", () => {
-  console.log(`🚀 Server running on ${PORT}`);
+  console.log(`🚀 Server running: http://localhost:${PORT}`);
 });

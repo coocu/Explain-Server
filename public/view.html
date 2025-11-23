@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<title>설명 미러링 화면</title>
+<style>
+  body {
+    margin:0;
+    background:#000;
+    overflow:hidden;
+  }
+
+  #screen {
+    width:100vw;
+    height:100vh;
+    object-fit:contain;
+    background:#111;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+  }
+
+  #screen img {
+    max-width:100%;
+    max-height:100%;
+  }
+</style>
+</head>
+<body>
+
+<div id="screen">
+  <img id="mirrorImage" src="" alt="미러링 이미지" />
+</div>
+
+<script>
+const urlParams = new URLSearchParams(location.search);
+const empNo = urlParams.get("empNo");
+
+if (!empNo) {
+  document.body.innerHTML = "<h2 style='color:white'>empNo 필요</h2>";
+  throw new Error("empNo missing");
+}
+
+const evtSource = new EventSource(`/events/${empNo}`);
+
+evtSource.onmessage = (event) => {
+  const msg = JSON.parse(event.data);
+
+  // 이미지 갱신
+  if (msg.type === "image") {
+    document.getElementById("mirrorImage").src = msg.url + "?t=" + Date.now();
+  }
+};
+</script>
+
+</body>
+</html>
