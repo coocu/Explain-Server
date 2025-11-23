@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <title>설명 화면</title>
+  <style>
+    body { margin:0; background:#000; display:flex; justify-content:center; align-items:center; height:100vh; }
+    img { max-width:100%; max-height:100%; }
+  </style>
+</head>
+<body>
+  <img id="screen" src="" alt="설명 화면" />
+  <script>
+    const params = new URLSearchParams(location.search);
+    const empNo = params.get('empNo');
+
+    async function refresh() {
+      if (!empNo) return;
+      try {
+        const res = await fetch(`/api/latest?empNo=${empNo}`);
+        if (!res.ok) return;
+        const data = await res.json();
+        const img = document.getElementById('screen');
+
+        // 캐시 방지용 timestamp
+        img.src = data.url + '?t=' + Date.now();
+      } catch(e) {
+        console.error(e);
+      }
+    }
+
+    // 2초마다 최신 이미지 확인
+    setInterval(refresh, 2000);
+    refresh();
+  </script>
+</body>
+</html>
