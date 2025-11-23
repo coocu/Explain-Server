@@ -1,9 +1,4 @@
 // explain-server.js
-// ================================
-// Explain HTTP + SSE 서버
-// 실시간 미러링 + 이미지 저장 + 고객관리
-// ================================
-
 const express = require("express");
 const http = require("http");
 const cors = require("cors");
@@ -16,7 +11,7 @@ const server = http.createServer(app);
 const PORT = process.env.PORT || 5785;
 
 app.use(cors());
-app.use(express.json({ limit: "20mb" }));  
+app.use(express.json({ limit: "20mb" }));
 app.use(express.urlencoded({ extended: true, limit: "20mb" }));
 
 // ---- public 폴더 서빙 ----
@@ -27,6 +22,23 @@ const PDF_DIR = path.join(__dirname, "pdfs");
 if (!fs.existsSync(PDF_DIR)) fs.mkdirSync(PDF_DIR);
 
 const upload = multer({ dest: PDF_DIR });
+
+// ================================
+// (NEW) 0) 로그인 API 추가 (404 해결)
+// ================================
+app.post("/api/login", (req, res) => {
+  const { empNo } = req.body;
+
+  if (!empNo) {
+    return res.status(400).json({ ok: false, error: "empNo 누락" });
+  }
+
+  console.log("📌 LOGIN:", empNo);
+
+  if (!sseChannels[empNo]) sseChannels[empNo] = [];
+
+  res.json({ ok: true, empNo });
+});
 
 // ================================
 // 1) 미러링 VIEW 페이지 라우터
@@ -53,7 +65,7 @@ app.get("/events/:empNo", (req, res) => {
   if (!sseChannels[empNo]) sseChannels[empNo] = [];
   sseChannels[empNo].push(res);
 
-  // heartbeat
+  // heartbeat (브라우저 끊김 방지)
   const interval = setInterval(() => {
     res.write(`event: ping\ndata: {}\n\n`);
   }, 30000);
@@ -65,7 +77,9 @@ app.get("/events/:empNo", (req, res) => {
   });
 });
 
-// 메시지 브로드캐스트
+// ================================
+// 메시지 브로드캐스트 (SSE)
+// ================================
 function sendSSE(empNo, payload) {
   const list = sseChannels[empNo];
   if (!list) return;
@@ -89,7 +103,6 @@ app.post("/api/send", (req, res) => {
     return res.status(400).json({ ok: false, error: "필수값 누락" });
   }
 
-  // base64 전송 시 data: "data:image/png;base64,...." 그대로 보내면 OK
   sendSSE(empNo, { type, data });
 
   res.json({ ok: true });
@@ -101,7 +114,6 @@ app.post("/api/send", (req, res) => {
 let customers = [];
 let nextCustomerId = 1;
 
-// 고객 등록
 app.post("/api/customer", (req, res) => {
   const { empNo, name, phone, datetime } = req.body;
 
@@ -121,13 +133,12 @@ app.post("/api/customer", (req, res) => {
   res.json({ ok: true, customer: entry });
 });
 
-// 고객 조회
 app.get("/api/customer/:empNo", (req, res) => {
   const list = customers.filter((c) => c.empNo === req.params.empNo);
   res.json({ ok: true, list });
 });
 
-// PNG 업로드 → pdfs 폴더 저장
+// PNG 업로드
 app.post("/api/upload", upload.single("file"), (req, res) => {
   const id = parseInt(req.body.customerId);
   const file = req.file;
