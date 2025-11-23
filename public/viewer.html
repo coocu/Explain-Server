@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <title>Explain Viewer</title>
+
+  <style>
+    body {
+      margin: 0;
+      background: #111;
+      overflow: hidden;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      height: 100vh;
+    }
+
+    #imgBox {
+      max-width: 95%;
+      max-height: 95%;
+    }
+
+    #imgBox img {
+      width: 100%;
+      height: auto;
+      border: 2px solid #444;
+      background: #000;
+    }
+  </style>
+</head>
+
+<body>
+  <div id="imgBox">
+    <img id="mirrorImage" src="" alt="미러링 이미지" />
+  </div>
+
+  <script>
+    const params = new URLSearchParams(window.location.search);
+    const empNo = params.get("empNo");
+
+    if (!empNo) {
+      alert("empNo 없음");
+    }
+
+    const evtSource = new EventSource(`/events/${empNo}`);
+
+    evtSource.onmessage = (event) => {
+      const msg = JSON.parse(event.data);
+
+      if (msg.type === "image") {
+        document.getElementById("mirrorImage").src =
+          "data:image/png;base64," + msg.data;
+      }
+    };
+  </script>
+</body>
+</html>
