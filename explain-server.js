@@ -1,138 +1,164 @@
-// explain-server.js (완전 작동 버전)
+// explain-server.js
 // ================================
-// - SSE: 실시간 그림/하이라이트/삭제/리셋
-// - PNG 업로드 후 고객 화면 자동 갱신
-// - /view?empNo=XXXX 로 고객 화면 제공
-// - public 폴더에서 정적파일 제공
+// Explain HTTP + SSE 서버
+// 실시간 미러링 + 이미지 저장 + 고객관리
 // ================================
 
 const express = require("express");
 const http = require("http");
+const cors = require("cors");
 const path = require("path");
 const fs = require("fs");
-const cors = require("cors");
 const multer = require("multer");
 
 const app = express();
 const server = http.createServer(app);
-
 const PORT = process.env.PORT || 5785;
 
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: "10mb" }));   // ← 미러링 base64 이미지 받기 위함
+app.use(express.urlencoded({ extended: true, limit: "10mb" }));
 
-// public 정적 파일 서빙
-app.use("/", express.static(path.join(__dirname, "public")));
+// ---- public 폴더 서빙 ----
+app.use(express.static(path.join(__dirname, "public")));
 
-// 저장 폴더
-const UPLOAD_DIR = path.join(__dirname, "uploads");
-if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR);
+// ---- PDF 저장 폴더 ----
+const PDF_DIR = path.join(__dirname, "pdfs");
+if (!fs.existsSync(PDF_DIR)) fs.mkdirSync(PDF_DIR);
 
-// PNG 업로드용 multer
-const upload = multer({ dest: UPLOAD_DIR });
+const upload = multer({ dest: PDF_DIR });
 
-// SSE 저장소
-const channels = {}; // empNo → [res, res...]
-
-// ==============================
-// SSE 연결
-// ==============================
-app.get("/events/:empNo", (req, res) => {
-  const { empNo } = req.params;
-
-  res.set({
-    "Content-Type": "text/event-stream",
-    "Cache-Control": "no-cache, no-transform",
-    Connection: "keep-alive",
-  });
-
-  res.flushHeaders?.();
-
-  if (!channels[empNo]) channels[empNo] = [];
-  channels[empNo].push(res);
-
-  console.log(`🔗 SSE connected: ${empNo}`);
-
-  const heartbeat = setInterval(() => {
-    res.write(":\n\n");
-  }, 30000);
-
-  req.on("close", () => {
-    clearInterval(heartbeat);
-    channels[empNo] = channels[empNo].filter((r) => r !== res);
-    console.log(`❌ SSE disconnected: ${empNo}`);
-  });
-});
-
-// Broadcaster
-function sendSSE(empNo, payload) {
-  const list = channels[empNo];
-  if (!list) return;
-
-  const msg = `data: ${JSON.stringify(payload)}\n\n`;
-  list.forEach((r) => r.write(msg));
-}
-
-// ==============================
-// 상담사 → 고객 SSE 전송 API
-// ==============================
-app.post("/api/send", (req, res) => {
-  const { empNo, type, data } = req.body;
-
-  if (!empNo || !type) {
-    return res.status(400).json({ ok: false, error: "empNo, type required" });
-  }
-
-  sendSSE(empNo, { type, data });
-  res.json({ ok: true });
-});
-
-// ==============================
-// PNG 업로드 → 고객 화면 자동 갱신
-// ==============================
-app.post("/api/upload", upload.single("file"), (req, res) => {
-  const empNo = req.body.empNo;
-  const file = req.file;
-
-  if (!empNo || !file) {
-    return res.status(400).json({ ok: false });
-  }
-
-  const newName = `${empNo}_${Date.now()}.png`;
-  const newPath = path.join(UPLOAD_DIR, newName);
-
-  fs.renameSync(file.path, newPath);
-
-  // 고객 화면에 이미지 표시 이벤트 발송
-  sendSSE(empNo, {
-    type: "image",
-    url: `/uploads/${newName}`,
-  });
-
-  res.json({
-    ok: true,
-    url: `/uploads/${newName}`,
-  });
-});
-
-// 업로드 이미지 공개 제공
-app.use("/uploads", express.static(UPLOAD_DIR));
-
-// ==============================
-// 고객 화면 URL
-// ==============================
+// ================================
+// 1) 미러링 VIEW 페이지 라우터
+// ================================
 app.get("/view", (req, res) => {
   res.sendFile(path.join(__dirname, "public/view.html"));
 });
 
-// ==============================
-// 헬스체크
-// ==============================
-app.get("/health", (req, res) => {
+// ================================
+// 2) SSE (직원번호 채널별)
+// ================================
+const sseChannels = {}; // empNo → [res...]
+
+app.get("/events/:empNo", (req, res) => {
+  const empNo = req.params.empNo;
+  console.log("🔥 SSE CONNECT:", empNo);
+
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
+
+  res.flushHeaders?.();
+
+  if (!sseChannels[empNo]) sseChannels[empNo] = [];
+  sseChannels[empNo].push(res);
+
+  // heartbeat
+  const interval = setInterval(() => {
+    res.write(":\n\n");
+  }, 30000);
+
+  req.on("close", () => {
+    console.log("❌ SSE CLOSE:", empNo);
+    clearInterval(interval);
+    sseChannels[empNo] = sseChannels[empNo].filter((r) => r !== res);
+  });
+});
+
+function sendSSE(empNo, payload) {
+  const list = sseChannels[empNo];
+  if (!list) return;
+
+  const msg = `data: ${JSON.stringify(payload)}\n\n`;
+  list.forEach((res) => res.write(msg));
+}
+
+// ================================
+// 3) 안드로이드 -> 서버 -> 웹 미러링 전달
+// ================================
+app.post("/api/send", (req, res) => {
+  const { empNo, type, data } = req.body;
+
+  console.log("📡 /api/send:", empNo, type);
+
+  if (!empNo || !type || !data) {
+    return res.status(400).json({ ok: false, error: "필수값 누락" });
+  }
+
+  // 실시간 이벤트 브로드캐스트
+  sendSSE(empNo, { type, data });
+
   res.json({ ok: true });
 });
 
-// ==============================
-server.listen(PORT, "0.0.0.0", () => {
-  console.log(`🚀 Server running: http://localhost:${PORT}`);
+// ================================
+// 4) 고객관리 / PNG 업로드 (기존 동일)
+// ================================
+let customers = [];
+let nextCustomerId = 1;
+
+app.post("/api/customer", (req, res) => {
+  const { empNo, name, phone, datetime } = req.body;
+
+  if (!empNo || !name || !phone)
+    return res.status(400).json({ ok: false, error: "필수 누락" });
+
+  const entry = {
+    id: nextCustomerId++,
+    empNo,
+    name,
+    phone,
+    datetime: datetime || new Date().toISOString(),
+    pdfFileName: null,
+  };
+  customers.push(entry);
+
+  res.json({ ok: true, customer: entry });
+});
+
+// 고객 조회
+app.get("/api/customer/:empNo", (req, res) => {
+  const list = customers.filter((c) => c.empNo === req.params.empNo);
+  res.json({ ok: true, list });
+});
+
+// PNG 저장
+app.post("/api/upload", upload.single("file"), (req, res) => {
+  const id = parseInt(req.body.customerId);
+  const file = req.file;
+
+  const cust = customers.find((c) => c.id === id);
+  if (!cust) return res.json({ ok: false, error: "고객 없음" });
+
+  const safeName = cust.name.replace(/[^a-zA-Z0-9가-힣]/g, "");
+  const safePhone = cust.phone.replace(/[^0-9]/g, "");
+  const newName = `${safeName}_${safePhone}.png`;
+
+  fs.renameSync(file.path, path.join(PDF_DIR, newName));
+
+  cust.pdfFileName = newName;
+
+  res.json({ ok: true, filename: newName });
+});
+
+// 관리 페이지
+app.get("/admin/:empNo", (req, res) => {
+  const empNo = req.params.empNo;
+  const list = customers.filter((c) => c.empNo === empNo);
+
+  let html = `
+  <html><body><h1>상담 이력 - ${empNo}</h1><ul>
+  `;
+  for (const c of list) {
+    html += `<li>${c.name} (${c.phone}) - ${c.pdfFileName}</li>`;
+  }
+  html += `</ul></body></html>`;
+  res.send(html);
+});
+
+// ================================
+// 서버 시작
+// ================================
+server.listen(PORT, () => {
+  console.log(`🚀 Explain Server Running: ${PORT}`);
 });
