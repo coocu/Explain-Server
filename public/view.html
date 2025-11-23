@@ -25,22 +25,30 @@
   <img id="screen" src="" alt="미러링 이미지" />
 
   <script>
-    // URL: /view?empNo=1234
     const url = new URL(window.location.href);
     const empNo = url.searchParams.get("empNo");
 
     if (!empNo) {
-      alert("empNo 없음");
+      alert("empNo 값이 필요합니다.");
     }
+
+    const img = document.getElementById("screen");
 
     // SSE 연결
     const evt = new EventSource(`/events/${empNo}`);
 
     evt.onmessage = (e) => {
-      const msg = JSON.parse(e.data);
+      if (!e.data) return;
 
-      if (msg.type === "image") {
-        document.getElementById("screen").src = msg.data; // base64 dataURL 이미지
+      try {
+        const msg = JSON.parse(e.data);
+
+        if (msg.type === "image") {
+          img.src = msg.data;  // 🚀 base64 이미지 즉시 표시
+        }
+
+      } catch (err) {
+        console.warn("SSE JSON Parse Error:", err, e.data);
       }
     };
   </script>

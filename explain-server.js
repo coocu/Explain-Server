@@ -16,13 +16,13 @@ const server = http.createServer(app);
 const PORT = process.env.PORT || 5785;
 
 app.use(cors());
-app.use(express.json({ limit: "10mb" }));   // ← 미러링 base64 이미지 받기 위함
-app.use(express.urlencoded({ extended: true, limit: "10mb" }));
+app.use(express.json({ limit: "20mb" }));  
+app.use(express.urlencoded({ extended: true, limit: "20mb" }));
 
 // ---- public 폴더 서빙 ----
 app.use(express.static(path.join(__dirname, "public")));
 
-// ---- PDF 저장 폴더 ----
+// ---- PDF/PNG 저장 폴더 ----
 const PDF_DIR = path.join(__dirname, "pdfs");
 if (!fs.existsSync(PDF_DIR)) fs.mkdirSync(PDF_DIR);
 
@@ -36,7 +36,7 @@ app.get("/view", (req, res) => {
 });
 
 // ================================
-// 2) SSE (직원번호 채널별)
+// 2) 직원번호(empNo)별 SSE 채널
 // ================================
 const sseChannels = {}; // empNo → [res...]
 
@@ -55,26 +55,30 @@ app.get("/events/:empNo", (req, res) => {
 
   // heartbeat
   const interval = setInterval(() => {
-    res.write(":\n\n");
+    res.write(`event: ping\ndata: {}\n\n`);
   }, 30000);
 
   req.on("close", () => {
     console.log("❌ SSE CLOSE:", empNo);
     clearInterval(interval);
-    sseChannels[empNo] = sseChannels[empNo].filter((r) => r !== res);
+    sseChannels[empNo] = (sseChannels[empNo] || []).filter((r) => r !== res);
   });
 });
 
+// 메시지 브로드캐스트
 function sendSSE(empNo, payload) {
   const list = sseChannels[empNo];
   if (!list) return;
 
-  const msg = `data: ${JSON.stringify(payload)}\n\n`;
+  const msg =
+    `event: message\n` +
+    `data: ${JSON.stringify(payload)}\n\n`;
+
   list.forEach((res) => res.write(msg));
 }
 
 // ================================
-// 3) 안드로이드 -> 서버 -> 웹 미러링 전달
+// 3) Android → Server → Web 실시간 전달
 // ================================
 app.post("/api/send", (req, res) => {
   const { empNo, type, data } = req.body;
@@ -85,18 +89,19 @@ app.post("/api/send", (req, res) => {
     return res.status(400).json({ ok: false, error: "필수값 누락" });
   }
 
-  // 실시간 이벤트 브로드캐스트
+  // base64 전송 시 data: "data:image/png;base64,...." 그대로 보내면 OK
   sendSSE(empNo, { type, data });
 
   res.json({ ok: true });
 });
 
 // ================================
-// 4) 고객관리 / PNG 업로드 (기존 동일)
+// 4) 고객 관리 / PNG 업로드
 // ================================
 let customers = [];
 let nextCustomerId = 1;
 
+// 고객 등록
 app.post("/api/customer", (req, res) => {
   const { empNo, name, phone, datetime } = req.body;
 
@@ -122,7 +127,7 @@ app.get("/api/customer/:empNo", (req, res) => {
   res.json({ ok: true, list });
 });
 
-// PNG 저장
+// PNG 업로드 → pdfs 폴더 저장
 app.post("/api/upload", upload.single("file"), (req, res) => {
   const id = parseInt(req.body.customerId);
   const file = req.file;
@@ -135,13 +140,12 @@ app.post("/api/upload", upload.single("file"), (req, res) => {
   const newName = `${safeName}_${safePhone}.png`;
 
   fs.renameSync(file.path, path.join(PDF_DIR, newName));
-
   cust.pdfFileName = newName;
 
   res.json({ ok: true, filename: newName });
 });
 
-// 관리 페이지
+// 관리자 페이지
 app.get("/admin/:empNo", (req, res) => {
   const empNo = req.params.empNo;
   const list = customers.filter((c) => c.empNo === empNo);
@@ -160,5 +164,5 @@ app.get("/admin/:empNo", (req, res) => {
 // 서버 시작
 // ================================
 server.listen(PORT, () => {
-  console.log(`🚀 Explain Server Running: ${PORT}`);
+  console.log(`🚀 Explain Server Running on PORT: ${PORT}`);
 });
