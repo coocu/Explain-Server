@@ -97,7 +97,7 @@ app.get("/api/customer/:empNo", (req, res) => {
   const empNo = req.params.empNo;
   const db = loadDB();
   const list =
-    empNo === "65465786" ? db : db.filter((c) => c.empNo === empNo);
+    empNo === "486" ? db : db.filter((c) => c.empNo === empNo);
 
   res.json({ ok: true, list });
 });
